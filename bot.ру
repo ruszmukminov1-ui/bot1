@@ -1,0 +1,89 @@
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
+from aiogram.utils import executor
+from PIL import Image, ImageOps
+from io import BytesIO
+
+# 🔹 ТВОЙ ТОКЕН
+TOKEN = "8366409670:AAGoyPOkiXIoy90jJntQEH6jOHibqb9Ulcw"
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
+
+# Хранилище выбора сетки для каждого пользователя
+user_grid_choice = {}
+
+# Главное меню
+menu = ReplyKeyboardMarkup(resize_keyboard=True)
+menu.add(
+    KeyboardButton("🟦 Сетка 2×2"),
+    KeyboardButton("🟩 Сетка 3×3"),
+    KeyboardButton("🟥 Сетка 4×4")
+)
+
+@dp.message_handler(commands=["start"])
+async def start_cmd(message: types.Message):
+    await message.answer(
+        "👋 Привет! Я нарежу твоё фото на сетку с белыми полями.\n"
+        "Выбери формат сетки ниже и отправь фото 📷",
+        reply_markup=menu
+    )
+
+@dp.message_handler(lambda msg: msg.text in ["🟦 Сетка 2×2", "🟩 Сетка 3×3", "🟥 Сетка 4×4"])
+async def set_grid(message: types.Message):
+    sizes = {"🟦 Сетка 2×2": 2, "🟩 Сетка 3×3": 3, "🟥 Сетка 4×4": 4}
+    user_grid_choice[message.from_user.id] = sizes[message.text]
+    await message.answer(f"✅ Формат {message.text} выбран.\nОтправь фото для обработки.")
+
+@dp.message_handler(content_types=["photo"])
+async def process_photo(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in user_grid_choice:
+        await message.answer("⚠ Сначала выбери формат сетки.", reply_markup=menu)
+        return
+
+    grid_size = user_grid_choice[user_id]
+
+    # Скачиваем фото
+    photo = await message.photo[-1].download(destination_file=BytesIO())
+    photo.seek(0)
+    img = Image.open(photo).convert("RGB")
+
+    # Добавляем белые поля сверху и снизу
+    desired_ratio = 1  # квадрат
+    img_w, img_h = img.size
+    current_ratio = img_w / img_h
+    if current_ratio > desired_ratio:
+        new_h = int(img_w / desired_ratio)
+        padding = (new_h - img_h) // 2
+        img = ImageOps.expand(img, border=(0, padding, 0, padding), fill="white")
+    elif current_ratio < desired_ratio:
+        new_w = int(img_h * desired_ratio)
+        padding = (new_w - img_w) // 2
+        img = ImageOps.expand(img, border=(padding, 0, padding, 0), fill="white")
+
+    # Нарезка фото
+    w, h = img.size
+    piece_w = w // grid_size
+    piece_h = h // grid_size
+    pieces = []
+
+    for row in range(grid_size):
+        for col in range(grid_size):
+            left = col * piece_w
+            top = row * piece_h
+            right = left + piece_w
+            bottom = top + piece_h
+            crop = img.crop((left, top, right, bottom))
+
+            buf = BytesIO()
+            crop.save(buf, format="JPEG")
+            buf.seek(0)
+            pieces.append(types.InputMediaPhoto(buf))
+
+    await message.answer_media_group(pieces)
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
